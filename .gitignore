@@ -1,0 +1,7 @@
+.env
+node_modules/
+*.html
+*.png
+log_absen.json
+error_*.png
+error_*.html
