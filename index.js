@@ -1,133 +1,190 @@
-import { Client, GatewayIntentBits, Partials, Events } from 'discord.js';
+import { Client, GatewayIntentBits, Events } from 'discord.js';
 import puppeteer from 'puppeteer';
-import axios from 'axios';
 import dotenv from 'dotenv';
-import fs, { stat } from 'fs';
-import { log } from 'console';
-// Load environment variables
+import fs from 'fs';
+import { isIP } from 'net';
+
 dotenv.config();
-// hubungin ke discornya 
+
 const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages]
 });
-// Ganti dengan Token Bot Anda di file .env
+
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
-const CHANNEL_ID = process.env.CHANNEL_ID; // Ambil dari .env agar lebih aman
-async function NotifAbsen(urlHalaman) {
-    // buka browser
-    const browser = await
-        puppeteer.launch({
-            headless: "new",
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
+const CHANNEL_ID = process.env.CHANNEL_ID;
+const linkLogin = "https://elearning.bsi.ac.id/login";
 
-        });
-    // hubungin ke channel nya
-    const channel = await client.channels.fetch(CHANNEL_ID);
-    const page = await browser.newPage();
-    // ketik url dari tab tersebut
-    await page.goto("https://elearning.bsi.ac.id/login");
-    // pilih username
+let browser, page, channel;
+
+async function serverDc() {
+    try {
+        channel = await client.channels.fetch(CHANNEL_ID);
+    } catch (error) {
+        console.log("error", error.message);
+    }
+}
+
+async function Auth() {
+    browser = await puppeteer.launch({
+        headless: process.env.HEADLESS === 'false' ? false : "new",
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--no-zygote'
+        ]
+    });
+    page = await browser.newPage();
+    await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+    await page.setDefaultNavigationTimeout(60000);
+    
+    await serverDc();
+    await bukalink(linkLogin);
+
     await page.waitForSelector('input[name="username"]');
-    // isi nim nya
+
     await page.type('input[name="username"]', process.env.NIM_BSI);
-    await page.waitForSelector('input[name="password"]');
     await page.type('input[name="password"]', process.env.PASS_BSI);
-    // Captcha
-    const pertanyaan = await
-        page.$eval('#captcha_question', (el) => el.innerText);
 
-    // ambil Semua angka dati id captcha_question dengan cari angka di value id nya sampai valuenya abis 
+    const pertanyaan = await page.$eval('#captcha_question', (el) => el.innerText);
     const angka = pertanyaan.match(/\d+/g);
-    const hasil =
-        // angka yang ditambahin tadi diubah ke int dan ditambahkan 
-        parseInt(angka[0]) + parseInt(angka[1]);
-    // jawab captcha_answer dan ubah hasil tadi jadi string lagi 
+    const hasil = parseInt(angka[0]) + parseInt(angka[1]);
     await page.type('#captcha_answer', hasil.toString());
-    // klik login
+
     await page.click('button[type="submit"]');
-    // ke halaman setelah login
-    await page.waitForNavigation();
-    await page.goto(urlHalaman);
-    // lihat doang isinya
-    const jadwalKuliah = await page.content();
-    //pilih semua jadwal jadwal
-    await page.waitForSelector('.col-lg-4.col-md-4.col-sm-12');
-    // Ambil simpan ke variabel 
-    const daftarJadwal = await
-        page.$$eval('.col-lg-4.col-md-4.col-sm-12', (semuaElement) => {
-            return semuaElement.map(el => {
-                //lihat hari ini ada kuliah apa enggak
-                const header = el.querySelector('.pricing-header');
-                // lihat nama Matkulnya
-                const namaMtk = el.querySelector('.pricing-title')?.innerText.trim();
-                // lihat jam berapa 
-                const waktu = el.querySelector('.pricing-save')?.innerText.trim();
-                // lihat link absennya
-                const linkAbsenMtk = el.querySelector('.btn.btn-primary.btn-lg')?.href;
+    await page.waitForNavigation({ waitUntil: 'domcontentloaded' });
+    console.log("Login Berhasil");
+}
 
-                // ada kuliah apa engga
-                let absen = '';
-                if (header && header.classList.contains('secondary')) {
-                    absen = 'tidak-masuk'
-                }
-                else if (header && header.classList.contains('pricing-header')) {
-                    absen = 'masuk'
-                }
-                return {
-                    namaMtk: namaMtk,
-                    waktu: waktu,
-                    absen: absen,
-                    linkAbsenMtk: linkAbsenMtk
-                };
+async function bukalink(url) {
+    await page.goto(url, { waitUntil: 'domcontentloaded' });
+}
+async function ambilDataJadwal() {
+    return await page.$$eval('.col-lg-4.col-md-4.col-sm-12', (semuaElement) => {
+        return semuaElement.map(el => {
+            const header = el.querySelector('.pricing-header');
+            const namaMtk = el.querySelector('.pricing-title')?.innerText.trim();
+            const waktu = el.querySelector('.pricing-save')?.innerText.trim();
+            const linkAbsenMtk = el.querySelector('.btn.btn-primary.btn-lg')?.href;
 
-            }
-            )
+            let absen = (header && header.classList.contains('secondary')) ? 'tidak-masuk' : 'masuk';
+            return { namaMtk, waktu, absen, linkAbsenMtk };
         });
-    for (const matkul of daftarJadwal) {
-        if (matkul.absen == 'masuk' && matkul.linkAbsenMtk) {
-            try {
-                await page.goto(matkul.linkAbsenMtk);
-                // Tunggu tombol muncul (ditingkatkan ke 15 detik)
-                await page.waitForSelector(".btn.btn-rounded", { timeout: 15000 })
-                const statusAbsen = await page.$eval('.btn.btn-rounded', el => {
-                    if (el.classList.contains('btn-danger')) return 'belum mulai'
-                    else if (el.classList.contains('btn-success')) return 'mulai';
-                    else if (el.classList.contains('btn-warning')) return 'sudah selesai';
-                    else return '';
+    });
+}
 
-                });
-                if (statusAbsen === 'mulai') {
-                    await page.click('.btn.btn-success.btn-rounded');
-                    await new Promise(r => setTimeout(r, 4000)); // Tunggu 4 detik buat refresh
-                    let pesan = `Matkul ${matkul.namaMtk} Sudah Absenin`;
-                    if (channel) {
-                        await channel.send(pesan)
+
+
+async function NotifAbsen(urlHalaman,sesi) {
+    try {
+        await Auth();
+
+        await bukalink(urlHalaman);
+        
+        await page.waitForSelector('.col-lg-4.col-md-4.col-sm-12', { timeout: 30000 });
+
+        const daftarJadwal = await ambilDataJadwal();
+        console.log(`Berhasil mengambil data daftar Jadwal ${sesi}`);
+
+        for (const matkul of daftarJadwal) {
+            if (matkul.absen === 'masuk' && matkul.linkAbsenMtk) {
+                try {
+                   
+                    await bukalink(matkul.linkAbsenMtk);
+                    
+                    let tanda = true;
+                    try {
+                        await page.waitForSelector(".btn.btn-rounded", { timeout: 20000 });
+                    } catch {
+                       tanda = false;
                     }
+
+                    if(!tanda){
+                        console.log(`[!] Tombol absen tidak ada untuk ${matkul.namaMtk}, skip.`);
+                        continue;
+                    }
+
+                    const statusAbsen = await page.$eval('.btn.btn-rounded', el => {
+                        const teks = el.innerText.toLowerCase().trim();
+                        if (teks.includes('mulai')) return 'mulai';
+                        if (teks.includes('belum mulai')) return 'belum mulai';
+                        if (teks.includes('sudah selesai')) return 'sudah selesai';
+                        return 'tidak diketahui';
+                    });
+                    
+                   
+
+                    if (statusAbsen === 'mulai') {
+                        const cekbtn = await page.waitForSelector('.btn.btn-rounded');
+                        const isPrimary = await cekbtn.evaluate(el => el.classList.contains('btn-primary'));
+                        if (isPrimary){
+                            console.log(`klik ABSEN pada matkul ${matkul.namaMtk}`);
+                            await page.click('.btn.btn-rounded');
+                            await new Promise(r => setTimeout(r, 4000));
+                        if (channel) await channel.send(`Matkul ${matkul.namaMtk} Sudah Absenin King 👑`);
+                        }
+                        
+                        
+                    }
+                } catch (error) {
+                    console.log(`    error  matkul di ${matkul.namaMtk}: ${error.message}`);
                 }
-                matkul.KeteranganAbsen = statusAbsen;
-            } catch (error) {
-                console.log("ada error");
             }
         }
-        else {
-            matkul.KeteranganAbsen = "belum mulai";
-
+    } catch (globalError) {
+        console.log(`Error di ${urlHalaman}: ${globalError.message}`);
+    } finally {
+        if (browser) {
+            await browser.close();
         }
     }
-    await browser.close();
 }
+// async function tugas(urlHalaman) {
+//     const fileName = 'dataTugas.json';
+//     if (!fs.existsSync(fileName)) {
+//         fs.writeFileSync(fileName, JSON.stringify([], null, 2));
+//         console.log(`[+] File ${fileName} berhasil dibuat.`);
+//     }
+
+//     try {
+//         await Auth();
+//         await bukalink(urlHalaman);
+//         console.log(`Memproses halaman tugas: ${urlHalaman}`);
+//         // Logika scraping tugas bisa ditambahkan di sini nanti
+//         const daftarJadwal = await ambilDataJadwal();
+//         // let pesan = '';
+//         // daftarJadwal.forEach( m => {
+//         //     pesan += `\n ${m.namaMtk}`;
+//         // })
+//         // channel.send(pesan);
+//         for(const matkul of daftarJadwal ){
+//             if(matkul.linkAbsenMtk){
+//                 console.log(`membuka link ${matkul.linkAbsenMtk}`)
+//                 bukalink(matkul.linkAbsenMtk);
+//             }
+//         }
+
+
+//     } catch (error) {
+//         console.log(`[!] Error Tugas: ${error.message}`);
+//     } finally {
+//         if (browser) await browser.close();
+//     }
+// }
+
 async function semenit() {
-    await NotifAbsen("https://elearning.bsi.ac.id/sch");
-    await NotifAbsen("https://elearning.bsi.ac.id/kuliah-pengganti");
-    await new Promise(r => setTimeout(r, 60000));
-    semenit();
+    await NotifAbsen("https://elearning.bsi.ac.id/sch",'kuliah');
+    await NotifAbsen("https://elearning.bsi.ac.id/kuliah-pengganti",'kuliah pengganti');
+    // await tugas("https://elearning.bsi.ac.id/sch");
+    setTimeout(semenit, 60000);
 }
-// Event saat bot online
-client.on('ready', async () => {
-    const channel = await client.channels.fetch(CHANNEL_ID);
-    await channel.send('menghubungkan');
+
+client.on(Events.ClientReady, async () => {
+    await serverDc();
+    if (channel) await channel.send('menghubungkan');
     semenit();
 });
+
 client.login(DISCORD_TOKEN);
-
-
