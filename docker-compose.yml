@@ -1,0 +1,10 @@
+services:
+  bot:
+    build: .
+    container_name: wa-absen-bot
+    restart: unless-stopped
+    # Meneruskan file .env ke dalam container
+    env_file:
+      - .env
+    # Kadang Puppeteer membutuhkan memori shm lebih besar agar tidak crash
+    shm_size: '2gb'
